@@ -50,12 +50,14 @@ pub const Parm_STK_STATUS = 0x9C;
 
 const LOST_SYNC = error.BrokenPipe;
 
+// TODO: Rewrite errors to only relevant ones?
 pub const ArduinoUnoStkConnection = struct {
+    port: std.fs.File,
     pub const OpenError = error {
         // Drawn from std.fs.File.OpenError.NoDevice
         NoDevice,
     } || std.fs.File.ReadError;
-    port: std.fs.File,
+
     pub fn open(port: std.fs.File) OpenError!ArduinoUnoStkConnection {
         var conn = ArduinoUnoStkConnection { .port = port, };
         conn.getsync() catch |err| switch(err) {
@@ -89,10 +91,9 @@ pub const ArduinoUnoStkConnection = struct {
         }
         return LOST_SYNC;
     }
-    pub fn command(this: *@This(), msg: []const u8) !void {
-        try this.send(msg);
+    pub fn command(this: *@This(), msg: []const u8) (std.fs.File.ReadError || std.fs.File.WriteError)!void {
         var resp: [2]u8 = undefined;
-        try this.recv(&resp);
+        try this.request(msg, &resp);
     }
     pub fn send(this: *@This(), msg: []const u8) std.fs.File.WriteError!void {
         try set_timeout(this.port, 500);
@@ -122,7 +123,7 @@ pub const ArduinoUnoStkConnection = struct {
         if (status == Resp_STK_FAILED) return error.AccessDenied; // Also possible when the device doesn't recognize the parameter.
         if (status != Resp_STK_OK) return error.Unexpected;
     }
-    pub fn drain(this: *@This()) !void {
+    pub fn drain(this: *@This()) std.fs.File.ReadError!void {
         // This timeout slows down how fast we can connect to the programmer,
         // but the sync takes quite a long time. avrdude uses 250ms, which is
         // probably a good compromise. I'm experimenting with the stability here
@@ -131,7 +132,7 @@ pub const ArduinoUnoStkConnection = struct {
         var buf: [512]u8 = undefined;
         while (try this.port.read(&buf) != 0) {}
     }
-    pub fn loadaddr(this: *@This(), addr: u16) !void {
+    pub fn loadaddr(this: *@This(), addr: u16) (std.fs.File.ReadError || std.fs.File.WriteError)!void {
         var msg: [4]u8 = .{Cmnd_STK_LOAD_ADDRESS, 0, 0, Sync_CRC_EOP};
         std.mem.writePackedInt(u16, msg[1..3], 0, addr, .little);
         try this.command(&msg);

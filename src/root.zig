@@ -48,6 +48,8 @@ pub const Parm_STK500_TOPCARD_DETECT = 0x98;
 pub const Parm_STK_500P_PDI = 0x9A;
 pub const Parm_STK_STATUS = 0x9C;
 
+const LOST_SYNC = error.BrokenPipe;
+
 pub const ArduinoUnoStkConnection = struct {
     pub const OpenError = error {
         // Drawn from std.fs.File.OpenError.NoDevice
@@ -56,10 +58,13 @@ pub const ArduinoUnoStkConnection = struct {
     port: std.fs.File,
     pub fn open(port: std.fs.File) OpenError!ArduinoUnoStkConnection {
         var conn = ArduinoUnoStkConnection { .port = port, };
-        if (try conn.getsync()) return conn;
-        return error.NoDevice;
+        conn.getsync() catch |err| switch(err) {
+            error.BrokenPipe => return error.NoDevice,
+            else => return err
+        };
+        return conn;
     }
-    pub fn getsync(this: *@This()) OpenError!bool {
+    pub fn getsync(this: *@This()) std.fs.File.ReadError!void {
         try set_timeout(this.port, 0);
 
         for (0..6) |_| {
@@ -79,58 +84,43 @@ pub const ArduinoUnoStkConnection = struct {
             
             // Discharge line noise.
             try this.drain();
-
-            this.request(&.{Cmnd_STK_GET_SYNC, Sync_CRC_EOP}) catch continue;
-            return true;
+            this.command(&.{Cmnd_STK_GET_SYNC, Sync_CRC_EOP}) catch continue;
+            return;
         }
-        return false;
+        return LOST_SYNC;
     }
-    pub fn send(this: *@This(), msg: []const u8) !void {
+    pub fn command(this: *@This(), msg: []const u8) !void {
+        try this.send(msg);
+        var resp: [2]u8 = undefined;
+        try this.recv(&resp);
+    }
+    pub fn send(this: *@This(), msg: []const u8) std.fs.File.WriteError!void {
         try set_timeout(this.port, 500);
         if (this.port.write(msg) catch @panic("unexpected error") != msg.len) return error.BrokenPipe;
     }
-    pub fn recv(this: *@This(), msg: []u8) !void {
+    pub fn recv(this: *@This(), msg: []u8) std.fs.File.ReadError!void {
         try set_timeout(this.port, 5000);
         if (this.port.read(msg) catch @panic("unexpected error") != msg.len) return error.ConnectionTimedOut;
     }
-    pub fn getparm(this: *@This(), parm: u8) !u8 {
-        var resp: [32]u8 = undefined;
-        for (0..3) |_| {
-            try this.send(&.{Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP});
-            try this.recv(resp[0..1]);
-
-            if (resp[0] == Resp_STK_NOSYNC and !(try this.getsync())) return error.BrokenPipe;
-            break;
-        } else return error.BrokenPipe;
-        if (resp[0] != Resp_STK_INSYNC) return error.BrokenPipe;
-        
-        try this.recv(resp[0..2]);
-        if (resp[1] == Resp_STK_FAILED) return error.AccessDenied; // Also possible when the device doesn't recognize the parameter.
-        if (resp[1] != Resp_STK_OK) return error.Unexpected;
-        return resp[0];
+    pub fn getparm(this: *@This(), parm: u8) (std.fs.File.ReadError || std.fs.File.WriteError)!u8 {
+        var resp: [3]u8 = undefined;
+        try this.request(&.{Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP}, &resp);
+        return resp[1];
     }
-    pub fn request(this: *@This(), msg: []const u8) !void {
-        var resp: [1]u8 = undefined;
-        
-        try this.send(msg);
-        try this.recv(resp[0..1]);
+    pub fn request(this: *@This(), msg: []const u8, response: []u8) (std.fs.File.ReadError || std.fs.File.WriteError)!void {
+        for (0..3) |_| {
+            try this.send(msg);
+            try this.recv(response[0..1]);
 
-        if (resp[0] == Resp_STK_NOSYNC) {
-            std.debug.print("lost sync\n", .{});
-            try this.drain();
-            return error.NotResponding;
-        } else
-        if (resp[0] != Resp_STK_INSYNC) {
-            std.debug.print("unexpected response\n", .{});
-
-            try this.drain();
-            return error.NotResponding;
-        }
+            if (response[0] == Resp_STK_NOSYNC) try this.getsync();
+            break;
+        } else return LOST_SYNC;
+        if (response[0] != Resp_STK_INSYNC) return error.InputOutput; // Programmer says we're in a bad state.
         
-        try this.recv(resp[0..1]);
-        if (resp[0] != Resp_STK_OK) {
-            return error.ProtocolFailed;
-        }
+        try this.recv(response[1..]);
+        const status = response[response.len - 1];
+        if (status == Resp_STK_FAILED) return error.AccessDenied; // Also possible when the device doesn't recognize the parameter.
+        if (status != Resp_STK_OK) return error.Unexpected;
     }
     pub fn drain(this: *@This()) !void {
         // This timeout slows down how fast we can connect to the programmer,
@@ -138,13 +128,13 @@ pub const ArduinoUnoStkConnection = struct {
         // probably a good compromise. I'm experimenting with the stability here
         // since 50ms works on my machine.
         try set_timeout(this.port, 50);
-        var buf: [1024]u8 = undefined;
-        while (try this.port.read(buf[0..]) != 0) {}
+        var buf: [512]u8 = undefined;
+        while (try this.port.read(&buf) != 0) {}
     }
     pub fn loadaddr(this: *@This(), addr: u16) !void {
         var msg: [4]u8 = .{Cmnd_STK_LOAD_ADDRESS, 0, 0, Sync_CRC_EOP};
         std.mem.writePackedInt(u16, msg[1..3], 0, addr, .little);
-        try this.request(&msg);
+        try this.command(&msg);
     }
 };
 

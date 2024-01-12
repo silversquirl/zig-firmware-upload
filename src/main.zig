@@ -60,7 +60,7 @@ pub fn main() !void {
     std.debug.print("Software version: {}.{}\n", .{maj, min});
 
     // Only obvious source for this information is avrdude.conf.
-    try port.request(&[22]u8{
+    try port.command(&[22]u8{
         flash.Cmnd_STK_SET_DEVICE,
         0x86, // ATmega328P
         0x00, // Not used
@@ -86,7 +86,7 @@ pub fn main() !void {
     });
     var setdevicebuf: [7]u8 = .{flash.Cmnd_STK_SET_DEVICE_EXT, extparms, eeprom_page, pagel, bs2, reset_disabled, flash.Sync_CRC_EOP};
     setdevicebuf[extparms + 2] = flash.Sync_CRC_EOP;
-    try port.request(setdevicebuf[0..extparms + 3]);
+    try port.command(setdevicebuf[0..extparms + 3]);
 
 
     const target: f32 = @floatFromInt(try port.getparm(flash.Parm_STK_VTARGET));
@@ -104,7 +104,7 @@ pub fn main() !void {
     std.debug.print("Oscillator prescale: {d}\n", .{osc_pscale});
     std.debug.print("Found frequency: {d}\n", .{freq});
 
-    try port.request(&.{flash.Cmnd_STK_ENTER_PROGMODE, flash.Sync_CRC_EOP});
+    try port.command(&.{flash.Cmnd_STK_ENTER_PROGMODE, flash.Sync_CRC_EOP});
     const page_size = 128;
     var addr: u16 = 0;
 
@@ -119,7 +119,7 @@ pub fn main() !void {
         });
         std.mem.copyForwards(u8, buf[4..], image[addr..@min(addr + page_size, image.len - addr)]);
         buf[4 + page_size] = flash.Sync_CRC_EOP;
-        try port.request(&buf);
+        try port.command(&buf);
         std.debug.print("Prog page ok\n", .{});
     }    
 }

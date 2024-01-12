@@ -109,7 +109,7 @@ pub fn main() !void {
     var addr: u16 = 0;
 
     while (addr < image.len) : (addr += page_size) {
-        try stk500_loadaddr(port.port, addr);
+        try port.loadaddr(addr);
         var buf = std.mem.zeroes([page_size + 5]u8);
         std.mem.copyForwards(u8, &buf, &.{
             flash.Cmnd_STK_PROG_PAGE,
@@ -122,10 +122,4 @@ pub fn main() !void {
         try port.request(&buf);
         std.debug.print("Prog page ok\n", .{});
     }    
-}
-
-fn stk500_loadaddr(port: std.fs.File, addr: u16) !void {
-    var msg: [4]u8 = .{flash.Cmnd_STK_LOAD_ADDRESS, 0, 0, flash.Sync_CRC_EOP};
-    std.mem.writePackedInt(u16, msg[1..3], 0, addr, .little);
-    try flash.stk500_request(port, &msg);
 }

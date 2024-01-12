@@ -55,50 +55,96 @@ pub const ArduinoUnoStkConnection = struct {
     } || std.fs.File.ReadError;
     port: std.fs.File,
     pub fn open(port: std.fs.File) OpenError!ArduinoUnoStkConnection {
+        var conn = ArduinoUnoStkConnection { .port = port, };
+        if (try conn.getsync()) return conn;
+        return error.NoDevice;
+    }
+    pub fn getsync(this: *@This()) OpenError!bool {
+        try set_timeout(this.port, 0);
 
-        try set_timeout(port, 0);
-
-        var attempts: u8 = 10;
-        while (attempts != 0) : (attempts -= 1) {
+        for (0..6) |_| {
             // Reboot the bootloader to put it in a listening state.
 
             // Ported from https://github.com/avrdudes/avrdude/blob/a336e47a6e1fe069c45096edaeda1b4841ad7ce5/src/stk500.c#L118
             // "This code assumes a negative-logic USB to TTL serial adapter
             //  Pull the RTS/DTR line low to reset AVR: it is still high from open()/last attempt"
             // FIXME: Error handling for EscapeCommFunction.
-            if (0 == windows.EscapeCommFunction(port.handle, windows.SETDTR)) std.debug.panic("unexpected error", .{});
-            // if (0 == windows.EscapeCommFunction(port.handle, windows.SETRTS)) std.debug.panic("unexpected error");
-            std.time.sleep(1000 * 100);
+            if (0 == windows.EscapeCommFunction(this.port.handle, windows.SETDTR)) std.debug.panic("unexpected error", .{});
+            std.time.sleep(1000 * 100); // Wait for capacitor to discharge: we're bringing the RESET line on the board low.
 
-            if (0 == windows.EscapeCommFunction(port.handle, windows.CLRDTR)) std.debug.panic("unexpected error", .{});
-            if (0 == windows.EscapeCommFunction(port.handle, windows.CLRRTS)) std.debug.panic("unexpected error", .{});
+            // Release RESET and allow the bootloader to start. Wait 20ms for it to initialize.
+            if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRRTS)) std.debug.panic("unexpected error", .{});
+            if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRDTR)) std.debug.panic("unexpected error", .{});
             std.time.sleep(1000 * 1000 * 20);
             
-            try serial_drain(port);
-            
-            stk500_request(port, &.{Cmnd_STK_GET_SYNC, Sync_CRC_EOP}) catch continue;
-            return ArduinoUnoStkConnection {
-                .port = port,
-            };
-        }
-        // std.debug.print("connected after {} attempts\n", .{10 - attempts});
+            // Discharge line noise.
+            try this.drain();
 
-        return error.NoDevice;
+            this.request(&.{Cmnd_STK_GET_SYNC, Sync_CRC_EOP}) catch continue;
+            return true;
+        }
+        return false;
     }
     pub fn send(this: *@This(), msg: []const u8) !void {
-        try stk500_send(this.port, msg);
+        try set_timeout(this.port, 500);
+        if (this.port.write(msg) catch @panic("unexpected error") != msg.len) return error.BrokenPipe;
     }
     pub fn recv(this: *@This(), msg: []u8) !void {
-        try stk500_recv(this.port, msg);
+        try set_timeout(this.port, 5000);
+        if (this.port.read(msg) catch @panic("unexpected error") != msg.len) return error.ConnectionTimedOut;
     }
     pub fn getparm(this: *@This(), parm: u8) !u8 {
-        return try stk500_getparm(this.port, parm);
+        var resp: [32]u8 = undefined;
+        for (0..3) |_| {
+            try this.send(&.{Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP});
+            try this.recv(resp[0..1]);
+
+            if (resp[0] == Resp_STK_NOSYNC and !(try this.getsync())) return error.BrokenPipe;
+            break;
+        } else return error.BrokenPipe;
+        if (resp[0] != Resp_STK_INSYNC) return error.BrokenPipe;
+        
+        try this.recv(resp[0..2]);
+        if (resp[1] == Resp_STK_FAILED) return error.AccessDenied; // Also possible when the device doesn't recognize the parameter.
+        if (resp[1] != Resp_STK_OK) return error.Unexpected;
+        return resp[0];
     }
     pub fn request(this: *@This(), msg: []const u8) !void {
-        try stk500_request(this.port, msg);
+        var resp: [1]u8 = undefined;
+        
+        try this.send(msg);
+        try this.recv(resp[0..1]);
+
+        if (resp[0] == Resp_STK_NOSYNC) {
+            std.debug.print("lost sync\n", .{});
+            try this.drain();
+            return error.NotResponding;
+        } else
+        if (resp[0] != Resp_STK_INSYNC) {
+            std.debug.print("unexpected response\n", .{});
+
+            try this.drain();
+            return error.NotResponding;
+        }
+        
+        try this.recv(resp[0..1]);
+        if (resp[0] != Resp_STK_OK) {
+            return error.ProtocolFailed;
+        }
     }
     pub fn drain(this: *@This()) !void {
-        try serial_drain(this.port);
+        // This timeout slows down how fast we can connect to the programmer,
+        // but the sync takes quite a long time. avrdude uses 250ms, which is
+        // probably a good compromise. I'm experimenting with the stability here
+        // since 50ms works on my machine.
+        try set_timeout(this.port, 50);
+        var buf: [1024]u8 = undefined;
+        while (try this.port.read(buf[0..]) != 0) {}
+    }
+    pub fn loadaddr(this: *@This(), addr: u16) !void {
+        var msg: [4]u8 = .{Cmnd_STK_LOAD_ADDRESS, 0, 0, Sync_CRC_EOP};
+        std.mem.writePackedInt(u16, msg[1..3], 0, addr, .little);
+        try this.request(&msg);
     }
 };
 
@@ -112,78 +158,6 @@ fn set_timeout(port: std.fs.File, timeout: u32) error {}!void {
     })) std.debug.panic("unexpected error {any}", .{std.os.windows.kernel32.GetLastError()}); // FIXME
 }
 
-pub fn stk500_getparm(port: std.fs.File, parm: u8) !u8 {
-    try stk500_send(port, &.{Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP});
-    var resp: [32]u8 = undefined;
-    stk500_recv(port, resp[0..1]) catch return error.Timeout;
-    if (resp[0] == Resp_STK_NOSYNC) {
-        std.debug.print("lost sync\n", .{});
-        try serial_drain(port);
-        return error.NotResponding;
-    } else
-    if (resp[0] != Resp_STK_INSYNC) {
-        std.debug.print("unexpected response\n", .{});
-
-        try serial_drain(port);
-        return error.NotResponding;
-    } else {
-        try stk500_recv(port, resp[0..2]);
-        if (resp[1] == Resp_STK_FAILED) {
-            std.debug.print("failed to get parm\n", .{});
-            try serial_drain(port);
-            return error.NotResponding;
-        } else if (resp[1] != Resp_STK_OK) {
-            std.debug.print("unexpected response\n", .{});
-            // try serial_drain(port);
-            return error.NotResponding;
-        } else {
-            return resp[0];
-        }
-    }
-}
-
-pub fn stk500_request(port: std.fs.File, msg: []const u8) !void {
-    var resp: [1]u8 = undefined;
-    
-    try stk500_send(port, msg);
-    try stk500_recv(port, resp[0..1]);
-
-    if (resp[0] == Resp_STK_NOSYNC) {
-        std.debug.print("lost sync\n", .{});
-        try serial_drain(port);
-        return error.NotResponding;
-    } else
-    if (resp[0] != Resp_STK_INSYNC) {
-        std.debug.print("unexpected response\n", .{});
-
-        try serial_drain(port);
-        return error.NotResponding;
-    }
-    
-    try stk500_recv(port, resp[0..1]);
-    if (resp[0] != Resp_STK_OK) {
-        return error.ProtocolFailed;
-    }
-}
-pub fn stk500_send(port: std.fs.File, msg: []const u8) !void {
-    try set_timeout(port, 500);
-    if (port.write(msg) catch @panic("unexpected error") != msg.len) return error.BrokenPipe;
-}
-pub fn stk500_recv(port: std.fs.File, msg: []u8) !void {
-    try set_timeout(port, 5000);
-    if (port.read(msg) catch @panic("unexpected error") != msg.len) return error.ConnectionTimedOut;
-}
-pub fn serial_drain(port: std.fs.File) std.fs.File.ReadError!void {
-    // This timeout slows down how fast we can connect to the programmer,
-    // but the sync takes quite a long time. avrdude uses 250ms, which is
-    // probably a good compromise. I'm experimenting with the stability here
-    // since 50ms works on my machine.
-    try set_timeout(port, 50);
-    var buf: [1024]u8 = undefined;
-    while (true) {
-        if (try port.read(buf[0..]) == 0) break;
-    }
-}
 
 const windows = struct {
     extern "kernel32" fn SetupComm(

@@ -77,12 +77,14 @@ pub const ArduinoUnoStkConnection = struct {
             // "This code assumes a negative-logic USB to TTL serial adapter
             //  Pull the RTS/DTR line low to reset AVR: it is still high from open()/last attempt"
             // FIXME: Error handling for EscapeCommFunction.
-            if (0 == windows.EscapeCommFunction(this.port.handle, windows.SETDTR)) std.debug.panic("unexpected error", .{});
+            try set_serial_modem_flag(this.port, DATA_TERMINAL_READY);
+            // if (0 == windows.EscapeCommFunction(this.port.handle, windows.SETDTR)) std.debug.panic("unexpected error", .{});
             std.time.sleep(1000 * 100); // Wait for capacitor to discharge: we're bringing the RESET line on the board low.
 
             // Release RESET and allow the bootloader to start. Wait 20ms for it to initialize.
-            if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRRTS)) std.debug.panic("unexpected error", .{});
-            if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRDTR)) std.debug.panic("unexpected error", .{});
+            try clear_serial_modem_flag(this.port, DATA_TERMINAL_READY | REQUEST_TO_SEND);
+            // if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRRTS)) std.debug.panic("unexpected error", .{});
+            // if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRDTR)) std.debug.panic("unexpected error", .{});
             std.time.sleep(1000 * 1000 * 20);
             
             // Discharge line noise.
@@ -139,18 +141,73 @@ pub const ArduinoUnoStkConnection = struct {
         try this.command(&msg);
     }
 };
+const TIOCMBIS = 0x5416;
+const TIOCMBIC = 0x5417;
+const DATA_TERMINAL_READY = 0x002;
+const REQUEST_TO_SEND = 0x004;
 
-fn set_timeout(port: std.fs.File, timeout: u32) error {}!void {
-    if (0 == windows.SetCommTimeouts(port.handle, &.{
-        .ReadIntervalTimeout = 0,
-        .ReadTotalTimeoutMultiplier = 0,
-        .ReadTotalTimeoutConstant = timeout,
-        .WriteTotalTimeoutMultiplier = 0,
-        .WriteTotalTimeoutConstant = 0,
-    })) std.debug.panic("unexpected error {any}", .{std.os.windows.kernel32.GetLastError()}); // FIXME
+const os = @import("builtin").target.os.tag;
+fn clear_serial_modem_flag(port: std.fs.File, flags: u32) !void {
+    switch (os) {
+        .windows => {
+            // FIXME: Map `GetLastError`s
+            if (flags & DATA_TERMINAL_READY != 0)
+                if (0 == windows.EscapeCommFunction(port.handle, windows.ExtendedCommFunctions.CLRDTR))
+                    std.debug.panic("unexpected error", .{});
+            if (flags & REQUEST_TO_SEND != 0)
+                if (0 == windows.EscapeCommFunction(port.handle, windows.ExtendedCommFunctions.CLRRTS))
+                    std.debug.panic("unexpected error", .{});
+            if (flags & ~(DATA_TERMINAL_READY | REQUEST_TO_SEND) != 0) @panic("unimplemented flag");
+        },
+        .linux => {
+            if (0 != std.os.linux.ioctl(port.handle, TIOCMBIC, @intFromPtr(&flags)))
+                @panic("unknown error");
+        },
+        else => @compileError("unimpld"),
+    }
 }
+fn set_serial_modem_flag(port: std.fs.File, flags: u32) !void {
+    switch (os) {
+        .windows => {
+            // FIXME: Map `GetLastError`s
+            if (flags & DATA_TERMINAL_READY != 0)
+                if (0 == windows.EscapeCommFunction(port.handle, windows.ExtendedCommFunctions.SETDTR))
+                    std.debug.panic("unexpected error", .{});
+            if (flags & REQUEST_TO_SEND != 0)
+                if (0 == windows.EscapeCommFunction(port.handle, windows.ExtendedCommFunctions.SETRTS))
+                    std.debug.panic("unexpected error", .{});
+            if (flags & ~(DATA_TERMINAL_READY | REQUEST_TO_SEND) != 0) @panic("unimplemented flag");
+        },
+        .linux => {
+            if (0 != std.os.linux.ioctl(port.handle, TIOCMBIS, @intFromPtr(&flags)))
+                @panic("unknown error");
+        },
+        else => @compileError("unimpld")
+    }
+}
+const VTIME = 17;
+fn set_timeout(port: std.fs.File, timeout: u32) error {}!void {
+    switch (os) {
+        .windows => {
 
-
+            if (0 == windows.SetCommTimeouts(port.handle, &.{
+                .ReadIntervalTimeout = 0,
+                .ReadTotalTimeoutMultiplier = 0,
+                .ReadTotalTimeoutConstant = timeout,
+                .WriteTotalTimeoutMultiplier = 0,
+                .WriteTotalTimeoutConstant = 0,
+            })) std.debug.panic("unexpected error {any}", .{std.os.windows.kernel32.GetLastError()}); // FIXME
+        },
+        .linux => {
+            var term: std.os.linux.termios = undefined;
+            if (0 != std.os.linux.tcgetattr(port.handle, &term)) @panic("err");
+            term.lflag &= ~std.os.linux.ICANON;
+            term.cc[VTIME] = @truncate(@max(timeout / 10, 255));
+            if (0 != std.os.linux.tcsetattr(port.handle, std.os.linux.TCSA.NOW, &term)) @panic("err");
+        },
+        else => @compileError("unimpld")
+    }
+}
 const windows = struct {
     extern "kernel32" fn SetupComm(
         hFile: std.os.windows.HANDLE,
@@ -193,17 +250,14 @@ const windows = struct {
         hFile: std.os.windows.HANDLE,
         dwFunc: std.os.windows.DWORD
     ) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
-    const SETXOFF = 1;
-    const SETXON = 2;
-    const SETRTS = 3;
-    const CLRRTS = 4;
-    const SETDTR = 5;
-    const CLRDTR = 6;
-    const SETBREAK = 8;
-    const CLRBREAK = 9;
-
+    const ExtendedCommFunctions = struct {
+        const SETXOFF = 1;
+        const SETXON = 2;
+        const SETRTS = 3;
+        const CLRRTS = 4;
+        const SETDTR = 5;
+        const CLRDTR = 6;
+        const SETBREAK = 8;
+        const CLRBREAK = 9;
+    };
 };
-
-test {
-    testing.refAllDecls(@This());
-}

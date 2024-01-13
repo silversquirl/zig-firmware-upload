@@ -39,8 +39,9 @@
         //    .path = "foo",
         //},
         .serial = .{
-            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/394bf7c05693787c131cce2699e0040405f1ab6d.tar.gz",
-            .hash = "1220ec55e33f683d37c123e8b2a1c8915ed3db3f76c8339922b8d28c00dd8bd316c2",
+            .url = "https://github.com/Plecra/serial/archive/12b6c7a6f910784b5d6d5b3e13441cbb535ab1bc.tar.gz",
+            .hash = "122020546c20fa714a45a26f8ad930f91ee6f2de27909d228b9dcf6483e5dbd07e02",
+            // .path = "../serial",
         },
     },
 

@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
     const flash = b.addModule("flash", .{
         .root_source_file = .{ .path = "src/root.zig" },
     });
+    flash.addImport("serial", b.dependency("serial", .{}).module("serial"));
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when

@@ -1,4 +1,5 @@
 const std = @import("std");
+pub const serial = @import("serial");
 const testing = std.testing;
 
 // Definitions from the 

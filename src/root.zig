@@ -141,10 +141,10 @@ pub const ArduinoUnoStkConnection = struct {
         try this.command(&msg);
     }
 };
-const TIOCMBIS = 0x5416;
-const TIOCMBIC = 0x5417;
-const DATA_TERMINAL_READY = 0x002;
-const REQUEST_TO_SEND = 0x004;
+const TIOCMBIS: u32 = 0x5416;
+const TIOCMBIC: u32 = 0x5417;
+const DATA_TERMINAL_READY: u32 = 0x002;
+const REQUEST_TO_SEND: u32 = 0x004;
 
 const os = @import("builtin").target.os.tag;
 fn clear_serial_modem_flag(port: std.fs.File, flags: u32) !void {

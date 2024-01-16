@@ -2,7 +2,7 @@ const std = @import("std");
 pub const serial = @import("serial");
 const testing = std.testing;
 
-// Definitions from the 
+// Definitions from the
 pub const Cmnd_STK_GET_SYNC = 0x30;
 pub const Cmnd_STK_GET_SIGN_ON = 0x31;
 pub const Cmnd_STK_READ_SIGN = 0x75;
@@ -22,12 +22,12 @@ pub const Cmnd_STK_READ_SIGNATURE = 0x30;
 pub const Cmnd_STK_READ_OSCCAL_EXT = 0x38;
 pub const Cmnd_STK_READ_FUSE_EXT = 0x50;
 
-pub const Resp_STK_OK               = 0x10;
-pub const Resp_STK_FAILED            = 0x11;
-pub const Resp_STK_UNKNOWN           = 0x12;
-pub const Resp_STK_NODEVICE          = 0x13;
-pub const Resp_STK_INSYNC            = 0x14;
-pub const Resp_STK_NOSYNC            = 0x15;
+pub const Resp_STK_OK = 0x10;
+pub const Resp_STK_FAILED = 0x11;
+pub const Resp_STK_UNKNOWN = 0x12;
+pub const Resp_STK_NODEVICE = 0x13;
+pub const Resp_STK_INSYNC = 0x14;
+pub const Resp_STK_NOSYNC = 0x15;
 
 pub const Parm_STK_SW_MAJOR = 0x80;
 pub const Parm_STK_SW_MINOR = 0x81;
@@ -54,16 +54,18 @@ const LOST_SYNC = error.BrokenPipe;
 // TODO: Rewrite errors to only relevant ones?
 pub const ArduinoUnoStkConnection = struct {
     port: std.fs.File,
-    pub const OpenError = error {
+    pub const OpenError = error{
         // Drawn from std.fs.File.OpenError.NoDevice
         NoDevice,
     } || std.fs.File.ReadError;
 
     pub fn open(port: std.fs.File) OpenError!ArduinoUnoStkConnection {
-        var conn = ArduinoUnoStkConnection { .port = port, };
-        conn.getsync() catch |err| switch(err) {
+        var conn = ArduinoUnoStkConnection{
+            .port = port,
+        };
+        conn.getsync() catch |err| switch (err) {
             error.BrokenPipe => return error.NoDevice,
-            else => return err
+            else => return err,
         };
         return conn;
     }
@@ -86,10 +88,10 @@ pub const ArduinoUnoStkConnection = struct {
             // if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRRTS)) std.debug.panic("unexpected error", .{});
             // if (0 == windows.EscapeCommFunction(this.port.handle, windows.CLRDTR)) std.debug.panic("unexpected error", .{});
             std.time.sleep(1000 * 1000 * 20);
-            
+
             // Discharge line noise.
             try this.drain();
-            this.command(&.{Cmnd_STK_GET_SYNC, Sync_CRC_EOP}) catch continue;
+            this.command(&.{ Cmnd_STK_GET_SYNC, Sync_CRC_EOP }) catch continue;
             return;
         }
         return LOST_SYNC;
@@ -108,7 +110,7 @@ pub const ArduinoUnoStkConnection = struct {
     }
     pub fn getparm(this: *@This(), parm: u8) (std.fs.File.ReadError || std.fs.File.WriteError)!u8 {
         var resp: [3]u8 = undefined;
-        try this.request(&.{Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP}, &resp);
+        try this.request(&.{ Cmnd_STK_GET_PARAMETER, parm, Sync_CRC_EOP }, &resp);
         return resp[1];
     }
     pub fn request(this: *@This(), msg: []const u8, response: []u8) (std.fs.File.ReadError || std.fs.File.WriteError)!void {
@@ -120,7 +122,7 @@ pub const ArduinoUnoStkConnection = struct {
             break;
         } else return LOST_SYNC;
         if (response[0] != Resp_STK_INSYNC) return error.InputOutput; // Programmer says we're in a bad state.
-        
+
         try this.recv(response[1..]);
         const status = response[response.len - 1];
         if (status == Resp_STK_FAILED) return error.AccessDenied; // Also possible when the device doesn't recognize the parameter.
@@ -133,10 +135,10 @@ pub const ArduinoUnoStkConnection = struct {
         // since 50ms works on my machine.
         try set_timeout(this.port, 50);
         var buf: [512]u8 = undefined;
-        while (try this.port.read(&buf) != 0) {}
+        while (try readButNotForLong(this.port, 50, &buf) != 0) {}
     }
     pub fn loadaddr(this: *@This(), addr: u16) (std.fs.File.ReadError || std.fs.File.WriteError)!void {
-        var msg: [4]u8 = .{Cmnd_STK_LOAD_ADDRESS, 0, 0, Sync_CRC_EOP};
+        var msg: [4]u8 = .{ Cmnd_STK_LOAD_ADDRESS, 0, 0, Sync_CRC_EOP };
         std.mem.writePackedInt(u16, msg[1..3], 0, addr, .little);
         try this.command(&msg);
     }
@@ -182,14 +184,13 @@ fn set_serial_modem_flag(port: std.fs.File, flags: u32) !void {
             if (0 != std.os.linux.ioctl(port.handle, TIOCMBIS, @intFromPtr(&flags)))
                 @panic("unknown error");
         },
-        else => @compileError("unimpld")
+        else => @compileError("unimpld"),
     }
 }
 const VTIME = 17;
-fn set_timeout(port: std.fs.File, timeout: u32) error {}!void {
+fn set_timeout(port: std.fs.File, timeout: u32) error{}!void {
     switch (os) {
         .windows => {
-
             if (0 == windows.SetCommTimeouts(port.handle, &.{
                 .ReadIntervalTimeout = 0,
                 .ReadTotalTimeoutMultiplier = 0,
@@ -205,32 +206,34 @@ fn set_timeout(port: std.fs.File, timeout: u32) error {}!void {
             term.cc[VTIME] = @truncate(@max(timeout / 10, 255));
             if (0 != std.os.linux.tcsetattr(port.handle, std.os.linux.TCSA.NOW, &term)) @panic("err");
         },
-        else => @compileError("unimpld")
+        else => @compileError("unimpld"),
     }
 }
+
+fn readButNotForLong(port: std.fs.File, about_this_long: i32, buf: []u8) !usize {
+    var fds: [1]std.os.pollfd = .{.{
+        .fd = port.handle,
+        .events = std.os.POLL.IN,
+        .revents = 0,
+    }};
+
+    const useful = std.os.poll(&fds, about_this_long) catch |err| switch (err) {
+        error.NetworkSubsystemFailed => unreachable,
+        else => |e| return e,
+    };
+    if (useful != 0) {
+        return try port.read(buf);
+    }
+    return 0;
+}
 const windows = struct {
-    extern "kernel32" fn SetupComm(
-        hFile: std.os.windows.HANDLE,
-        dwInQueue: std.os.windows.DWORD,
-        dwOutQueue: std.os.windows.DWORD  
-    ) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
-    extern "kernel32" fn CreateFileA(
-        lpFileName: [*]const u8,
-        dwDesiredAccess: std.os.windows.DWORD,
-        dwShareMode: std.os.windows.DWORD,
-        lpSecurityAttributes: ?*std.os.windows.SECURITY_ATTRIBUTES,
-        dwCreationDisposition: std.os.windows.DWORD,
-        dwFlagsAndAttributes: std.os.windows.DWORD,
-        hTemplateFile: ?std.os.windows.HANDLE
-    ) callconv(std.os.windows.WINAPI) std.os.windows.HANDLE;
+    extern "kernel32" fn SetupComm(hFile: std.os.windows.HANDLE, dwInQueue: std.os.windows.DWORD, dwOutQueue: std.os.windows.DWORD) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+    extern "kernel32" fn CreateFileA(lpFileName: [*]const u8, dwDesiredAccess: std.os.windows.DWORD, dwShareMode: std.os.windows.DWORD, lpSecurityAttributes: ?*std.os.windows.SECURITY_ATTRIBUTES, dwCreationDisposition: std.os.windows.DWORD, dwFlagsAndAttributes: std.os.windows.DWORD, hTemplateFile: ?std.os.windows.HANDLE) callconv(std.os.windows.WINAPI) std.os.windows.HANDLE;
     // BOOL SetCommTimeouts(
     //   [in] HANDLE         hFile,
     //   [in] LPCOMMTIMEOUTS lpCommTimeouts
     // );
-    extern "kernel32" fn SetCommTimeouts(
-        hFile: std.os.windows.HANDLE,
-        lpCommTimeouts: ?*const COMMTIMEOUTS
-    ) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+    extern "kernel32" fn SetCommTimeouts(hFile: std.os.windows.HANDLE, lpCommTimeouts: ?*const COMMTIMEOUTS) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
     // typedef struct _COMMTIMEOUTS {
     //   DWORD ReadIntervalTimeout;
     //   DWORD ReadTotalTimeoutMultiplier;
@@ -246,10 +249,7 @@ const windows = struct {
         WriteTotalTimeoutConstant: std.os.windows.DWORD,
     };
 
-    extern "kernel32" fn EscapeCommFunction(
-        hFile: std.os.windows.HANDLE,
-        dwFunc: std.os.windows.DWORD
-    ) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+    extern "kernel32" fn EscapeCommFunction(hFile: std.os.windows.HANDLE, dwFunc: std.os.windows.DWORD) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
     const ExtendedCommFunctions = struct {
         const SETXOFF = 1;
         const SETXON = 2;
